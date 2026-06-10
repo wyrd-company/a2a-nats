@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        node-version: [18, 20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+
+  integration-nats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      nats:
+        image: nats:2-alpine
+        ports:
+          - 4222:4222
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Wait for NATS
+        run: |
+          for i in $(seq 1 30); do
+            node -e "const net = require('node:net'); const s = net.connect(4222, '127.0.0.1'); s.once('connect', () => { s.end(); process.exit(0); }); s.once('error', () => process.exit(1)); setTimeout(() => process.exit(1), 500);" && exit 0
+            sleep 1
+          done
+          echo "NATS did not become ready"
+          exit 1
+      - run: npm test
+        env:
+          NATS_URL: nats://127.0.0.1:4222

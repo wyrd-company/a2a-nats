@@ -1,0 +1,58 @@
+{
+  "name": "@wyrd-company/a2a-nats",
+  "version": "0.1.0",
+  "description": "Agent2Agent (A2A) custom protocol binding for NATS.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Wyrd Company",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wyrd-company/a2a-nats.git"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/sdks/typescript/src/index.js",
+  "types": "./dist/sdks/typescript/src/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/sdks/typescript/src/index.js",
+      "types": "./dist/sdks/typescript/src/index.d.ts"
+    },
+    "./typescript": {
+      "import": "./dist/sdks/typescript/src/index.js",
+      "types": "./dist/sdks/typescript/src/index.d.ts"
+    },
+    "./protocol": {
+      "import": "./dist/protocol/src/index.js",
+      "types": "./dist/protocol/src/index.d.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "test": "node --test --import tsx test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify": "npm run typecheck && npm test && npm run build"
+  },
+  "peerDependencies": {
+    "@a2a-js/sdk": "^0.3.13"
+  },
+  "devDependencies": {
+    "@a2a-js/sdk": "^0.3.13",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@nats-io/transport-node": "^3.4.0"
+  }
+}
