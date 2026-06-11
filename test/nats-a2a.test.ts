@@ -16,6 +16,8 @@ import {
   NATS_TRANSPORT_PROTOCOL_NAME,
   NatsA2AClientTransport,
   NatsA2AServer,
+  a2aNatsAgentCardKey,
+  a2aNatsAgentCardNamespaceFilter,
   a2aNatsAgentSubject,
   natsSubjectFromAgentUrl,
 } from '../sdks/typescript/src/index.js';
@@ -78,6 +80,11 @@ test('parses NATS agent URLs and exposes the NATS protocol name', () => {
   assert.equal(natsSubjectFromAgentUrl('nats://a2a.agent.agent-a.rpc'), 'a2a.agent.agent-a.rpc');
   assert.equal(natsSubjectFromAgentUrl('nats://a2a/agent/agent-a/rpc'), 'a2a.agent.agent-a.rpc');
   assert.equal(natsSubjectFromAgentUrl('a2a.agent.agent-a.rpc'), 'a2a.agent.agent-a.rpc');
+  assert.equal(
+    a2aNatsAgentCardKey({ namespace: 'server-a', agentId: 'agent-a' }),
+    'server-a.agents.agent-a'
+  );
+  assert.equal(a2aNatsAgentCardNamespaceFilter('server-a'), 'server-a.agents.*');
 });
 
 class StubRequestHandler implements A2ARequestHandler {

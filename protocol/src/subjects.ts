@@ -7,10 +7,25 @@ export interface A2ANatsAgentSubjectOptions {
   readonly agentId: string;
 }
 
+export interface A2ANatsAgentCardKeyOptions {
+  readonly namespace: string;
+  readonly agentId: string;
+}
+
 export function a2aNatsAgentSubject(options: A2ANatsAgentSubjectOptions): string {
   const namespace = sanitizeSubjectToken(options.namespace ?? DEFAULT_A2A_NATS_NAMESPACE);
   const agentId = sanitizeSubjectToken(options.agentId);
   return `${namespace}.agent.${agentId}.rpc`;
+}
+
+export function a2aNatsAgentCardKey(options: A2ANatsAgentCardKeyOptions): string {
+  const namespace = sanitizeSubjectToken(options.namespace);
+  const agentId = sanitizeSubjectToken(options.agentId);
+  return `${namespace}.agents.${agentId}`;
+}
+
+export function a2aNatsAgentCardNamespaceFilter(namespace: string): string {
+  return `${sanitizeSubjectToken(namespace)}.agents.*`;
 }
 
 export function natsSubjectFromAgentUrl(url: string): string {
@@ -43,4 +58,3 @@ export function sanitizeSubjectToken(value: string): string {
   }
   return token;
 }
-

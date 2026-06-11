@@ -28,11 +28,6 @@ jobs:
   integration-nats:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    services:
-      nats:
-        image: nats:2-alpine
-        ports:
-          - 4222:4222
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,6 +35,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Start NATS with JetStream
+        run: docker run -d --rm --name a2a-nats-ci -p 4222:4222 nats:2-alpine -js
       - name: Wait for NATS
         run: |
           for i in $(seq 1 30); do
@@ -51,3 +48,6 @@ jobs:
       - run: npm test
         env:
           NATS_URL: nats://127.0.0.1:4222
+      - name: Stop NATS
+        if: always()
+        run: docker stop a2a-nats-ci || true

@@ -9,9 +9,21 @@ export { NatsA2AServer, serveA2AOverNats } from './server.js';
 export type { NatsA2AServerOptions } from './server.js';
 
 export {
+  JetStreamKvAgentCardRegistry,
+  createJetStreamKvAgentCardRegistry,
+} from './registry.js';
+export type {
+  AgentCardRegistryEntry,
+  AgentCardRegistryOptions,
+  PublishAgentCardOptions,
+} from './registry.js';
+
+export {
   A2A_NATS_PROTOCOL,
   DEFAULT_A2A_NATS_NAMESPACE,
   NATS_TRANSPORT_PROTOCOL_NAME,
+  a2aNatsAgentCardKey,
+  a2aNatsAgentCardNamespaceFilter,
   a2aNatsAgentSubject,
   natsSubjectFromAgentUrl,
   sanitizeSubjectToken,
@@ -24,4 +36,3 @@ export type {
   A2ANatsStreamResponseFrame,
   A2ANatsStreamTransportErrorFrame,
 } from '../../../protocol/src/index.js';
-

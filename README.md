@@ -60,6 +60,39 @@ const agentCard = {
 };
 ```
 
+## AgentCard Registry
+
+For NATS-native discovery, publish AgentCards to a dedicated JetStream KV bucket.
+The bucket is intentionally not part of the key; operators choose the bucket as
+the registry boundary. Keys use this shape:
+
+```text
+<namespace>.agents.<agentId>
+```
+
+Use `namespace` as the collision boundary for an A2A server group, deployment,
+tenant, environment, or other scope where `agentId` values are unique. A single
+bucket can therefore hold cards for multiple A2A server groups without key
+collisions.
+
+```ts
+import { JetStreamKvAgentCardRegistry } from '@wyrd-company/a2a-nats';
+
+const registry = new JetStreamKvAgentCardRegistry({
+  connection: nc,
+  bucket: 'A2A_AGENT_CARDS',
+  namespace: 'server-a',
+});
+
+await registry.publish({ agentId: 'agent-a', card: agentCard });
+
+const entry = await registry.resolve('agent-a');
+const cardsInNamespace = await registry.list();
+```
+
+This registry requires JetStream. The core NATS transport only requires core
+NATS request/reply.
+
 ## TypeScript Client
 
 ```ts
@@ -124,8 +157,8 @@ npm run verify
 ## Release
 
 CI runs on pushes and pull requests to `main`. The default verification job runs
-the Node matrix. A separate integration job starts `nats:2-alpine` and runs the
-`NATS_URL`-gated real NATS test once on Node 22.
+the Node matrix. A separate integration job starts `nats:2-alpine` with JetStream
+enabled and runs the `NATS_URL`-gated real NATS test once on Node 22.
 
 Publishing runs on SemVer git tags without a `v` prefix:
 

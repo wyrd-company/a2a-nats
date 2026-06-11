@@ -16,6 +16,7 @@ import { connect } from '@nats-io/transport-node';
 import {
   NatsA2AClientTransport,
   NatsA2AServer,
+  JetStreamKvAgentCardRegistry,
   a2aNatsAgentSubject,
 } from '../sdks/typescript/src/index.js';
 
@@ -59,6 +60,30 @@ test('routes A2A calls through a real NATS server', { skip: !natsUrl }, async ()
   }
 });
 
+test('publishes AgentCards to a dedicated JetStream KV bucket', { skip: !natsUrl }, async () => {
+  assert.ok(natsUrl);
+
+  const connection = await connect({ servers: natsUrl });
+  const registry = new JetStreamKvAgentCardRegistry({
+    connection,
+    bucket: `A2A_AGENT_CARDS_${Date.now()}`,
+    namespace: 'server-a',
+  });
+
+  try {
+    const card = new IntegrationRequestHandler().card();
+    const published = await registry.publish({ agentId: 'agent-a', card });
+    const resolved = await registry.resolve('agent-a');
+    const listed = await registry.list();
+
+    assert.equal(published.key, 'server-a.agents.agent-a');
+    assert.equal(resolved?.card.name, card.name);
+    assert.deepEqual(listed.map(entry => entry.key), ['server-a.agents.agent-a']);
+  } finally {
+    await connection.drain();
+  }
+});
+
 class IntegrationRequestHandler implements A2ARequestHandler {
   private readonly agentCard: AgentCard = {
     name: 'Integration Agent',
@@ -75,6 +100,10 @@ class IntegrationRequestHandler implements A2ARequestHandler {
     defaultOutputModes: ['text/plain'],
     skills: [],
   };
+
+  card(): AgentCard {
+    return this.agentCard;
+  }
 
   async getAgentCard(): Promise<AgentCard> {
     return this.agentCard;
