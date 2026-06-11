@@ -6,6 +6,7 @@ export interface A2ANatsRequestFrame {
   readonly protocol: typeof A2A_NATS_PROTOCOL;
   readonly request: JSONRPCRequest;
   readonly serviceParameters?: Record<string, string>;
+  readonly responseSubject?: string;
 }
 
 export interface A2ANatsStreamResponseFrame {
@@ -31,4 +32,3 @@ export type A2ANatsStreamFrame =
   | A2ANatsStreamResponseFrame
   | A2ANatsStreamCompleteFrame
   | A2ANatsStreamTransportErrorFrame;
-

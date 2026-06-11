@@ -13,7 +13,8 @@ The initial package is the TypeScript binding:
 - package: `@wyrd-company/a2a-nats`
 - A2A SDK: `@a2a-js/sdk`
 - NATS client: `@nats-io/transport-node`
-- transport protocol name: `NATS`
+- core transport protocol name: `NATS`
+- durable JetStream transport protocol name: `NATS+JS`
 
 ## Layout
 
@@ -92,6 +93,71 @@ const cardsInNamespace = await registry.list();
 
 This registry requires JetStream. The core NATS transport only requires core
 NATS request/reply.
+
+## Durable JetStream Transport
+
+The core `NATS` transport uses request/reply and is intentionally ephemeral.
+For durable enterprise message traffic, use the `NATS+JS` transport. It persists
+A2A requests and responses through JetStream streams:
+
+- request stream: stores frames on subjects such as
+  `<namespace>.agent.<agentId>.requests`
+- response stream: stores frames on subjects such as
+  `<namespace>.client.<clientId>.responses`
+- server durable consumer: pulls requests from the request stream
+- client request consumers: pull matching persisted response frames
+
+```ts
+import {
+  JetStreamA2AClientTransport,
+  JetStreamA2AServer,
+  a2aJetStreamRequestSubject,
+} from '@wyrd-company/a2a-nats';
+
+const namespace = 'server-a';
+const requestSubject = a2aJetStreamRequestSubject({
+  namespace,
+  agentId: 'agent-a',
+});
+
+const server = new JetStreamA2AServer({
+  connection: nc,
+  requestSubject,
+  requestStream: 'A2A_REQUESTS',
+  responseStream: 'A2A_RESPONSES',
+  responseSubjects: [`${namespace}.client.*.responses`],
+  requestHandler,
+});
+
+const client = new JetStreamA2AClientTransport({
+  connection: nc,
+  namespace,
+  clientId: 'client-a',
+  requestSubject,
+  requestStream: 'A2A_REQUESTS',
+  responseStream: 'A2A_RESPONSES',
+});
+
+await server.ready();
+await client.ready();
+```
+
+Agent cards can advertise this as a separate interface:
+
+```ts
+const agentCard = {
+  // ...
+  additionalInterfaces: [
+    {
+      transport: 'NATS+JS',
+      url: 'nats+js://server-a/agent/agent-a/requests',
+    },
+  ],
+};
+```
+
+JetStream stream creation is automatic by default. Set `createStreams: false`
+when streams are provisioned by operations.
 
 ## TypeScript Client
 

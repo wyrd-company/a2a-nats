@@ -6,16 +6,21 @@ import type {
   Message,
   MessageSendParams,
   Task,
+  TaskArtifactUpdateEvent,
   TaskIdParams,
   TaskPushNotificationConfig,
   TaskQueryParams,
+  TaskStatusUpdateEvent,
 } from '@a2a-js/sdk';
 import type { A2ARequestHandler } from '@a2a-js/sdk/server';
 
 import {
   NATS_TRANSPORT_PROTOCOL_NAME,
+  NATS_JETSTREAM_TRANSPORT_PROTOCOL_NAME,
   NatsA2AClientTransport,
   NatsA2AServer,
+  a2aJetStreamRequestSubject,
+  a2aJetStreamResponseSubject,
   a2aNatsAgentCardKey,
   a2aNatsAgentCardNamespaceFilter,
   a2aNatsAgentSubject,
@@ -77,9 +82,19 @@ test('routes streaming A2A events over a NATS reply inbox', async () => {
 
 test('parses NATS agent URLs and exposes the NATS protocol name', () => {
   assert.equal(NATS_TRANSPORT_PROTOCOL_NAME, 'NATS');
+  assert.equal(NATS_JETSTREAM_TRANSPORT_PROTOCOL_NAME, 'NATS+JS');
   assert.equal(natsSubjectFromAgentUrl('nats://a2a.agent.agent-a.rpc'), 'a2a.agent.agent-a.rpc');
+  assert.equal(natsSubjectFromAgentUrl('nats+js://a2a/agent/agent-a/requests'), 'a2a.agent.agent-a.requests');
   assert.equal(natsSubjectFromAgentUrl('nats://a2a/agent/agent-a/rpc'), 'a2a.agent.agent-a.rpc');
   assert.equal(natsSubjectFromAgentUrl('a2a.agent.agent-a.rpc'), 'a2a.agent.agent-a.rpc');
+  assert.equal(
+    a2aJetStreamRequestSubject({ namespace: 'server-a', agentId: 'agent-a' }),
+    'server-a.agent.agent-a.requests'
+  );
+  assert.equal(
+    a2aJetStreamResponseSubject({ namespace: 'server-a', clientId: 'client-a' }),
+    'server-a.client.client-a.responses'
+  );
   assert.equal(
     a2aNatsAgentCardKey({ namespace: 'server-a', agentId: 'agent-a' }),
     'server-a.agents.agent-a'
@@ -116,7 +131,7 @@ class StubRequestHandler implements A2ARequestHandler {
     return agentMessage(`echo: ${textFrom(params)}`);
   }
 
-  async *sendMessageStream(): AsyncGenerator<Task, void, undefined> {
+  async *sendMessageStream(): AsyncGenerator<Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent, void, undefined> {
     yield {
       kind: 'task',
       id: 'task-1',

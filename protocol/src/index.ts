@@ -1,7 +1,10 @@
 export {
   A2A_NATS_PROTOCOL,
   DEFAULT_A2A_NATS_NAMESPACE,
+  NATS_JETSTREAM_TRANSPORT_PROTOCOL_NAME,
   NATS_TRANSPORT_PROTOCOL_NAME,
+  a2aJetStreamRequestSubject,
+  a2aJetStreamResponseSubject,
   a2aNatsAgentCardKey,
   a2aNatsAgentCardNamespaceFilter,
   a2aNatsAgentSubject,

@@ -14,12 +14,14 @@ export function decodeJson(data: Uint8Array): unknown {
 
 export function encodeRequestFrame(
   request: JSONRPCRequest,
-  serviceParameters?: Record<string, string>
+  serviceParameters?: Record<string, string>,
+  responseSubject?: string
 ): Uint8Array {
   const frame: A2ANatsRequestFrame = {
     protocol: A2A_NATS_PROTOCOL,
     request,
     serviceParameters,
+    responseSubject,
   };
   return encodeJson(frame);
 }

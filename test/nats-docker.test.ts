@@ -6,9 +6,11 @@ import type {
   Message,
   MessageSendParams,
   Task,
+  TaskArtifactUpdateEvent,
   TaskIdParams,
   TaskPushNotificationConfig,
   TaskQueryParams,
+  TaskStatusUpdateEvent,
 } from '@a2a-js/sdk';
 import type { A2ARequestHandler } from '@a2a-js/sdk/server';
 import { connect } from '@nats-io/transport-node';
@@ -16,7 +18,10 @@ import { connect } from '@nats-io/transport-node';
 import {
   NatsA2AClientTransport,
   NatsA2AServer,
+  JetStreamA2AClientTransport,
+  JetStreamA2AServer,
   JetStreamKvAgentCardRegistry,
+  a2aJetStreamRequestSubject,
   a2aNatsAgentSubject,
 } from '../sdks/typescript/src/index.js';
 
@@ -48,6 +53,56 @@ test('routes A2A calls through a real NATS server', { skip: !natsUrl }, async ()
     assert.equal(unary.kind, 'message');
     assert.equal(unary.parts[0]?.kind, 'text');
     assert.equal(unary.parts[0]?.kind === 'text' ? unary.parts[0].text : '', 'echo: real nats');
+
+    const streamEvents = [];
+    for await (const event of client.sendMessageStream(sendParams('stream'))) {
+      streamEvents.push(event.kind);
+    }
+    assert.deepEqual(streamEvents, ['task', 'status-update']);
+  } finally {
+    await server.close();
+    await connection.drain();
+  }
+});
+
+test('routes A2A calls through JetStream-backed durable subjects', { skip: !natsUrl }, async () => {
+  assert.ok(natsUrl);
+
+  const connection = await connect({ servers: natsUrl });
+  const suffix = Date.now();
+  const requestSubject = a2aJetStreamRequestSubject({
+    namespace: `integration-js-${suffix}`,
+    agentId: 'agent-a',
+  });
+  const responseSubjectPattern = `integration-js-${suffix}.client.*.responses`;
+  const requestStream = `A2A_REQUESTS_${suffix}`;
+  const responseStream = `A2A_RESPONSES_${suffix}`;
+  const server = new JetStreamA2AServer({
+    connection,
+    requestSubject,
+    requestStream,
+    responseStream,
+    responseSubjects: [responseSubjectPattern],
+    requestHandler: new IntegrationRequestHandler(),
+  });
+  const client = new JetStreamA2AClientTransport({
+    connection,
+    requestSubject,
+    requestStream,
+    responseStream,
+    namespace: `integration-js-${suffix}`,
+    clientId: 'client-a',
+    requestTimeoutMs: 2_000,
+  });
+
+  try {
+    await server.ready();
+    await client.ready();
+
+    const unary = await client.sendMessage(sendParams('durable nats'));
+    assert.equal(unary.kind, 'message');
+    assert.equal(unary.parts[0]?.kind, 'text');
+    assert.equal(unary.parts[0]?.kind === 'text' ? unary.parts[0].text : '', 'echo: durable nats');
 
     const streamEvents = [];
     for await (const event of client.sendMessageStream(sendParams('stream'))) {
@@ -117,7 +172,7 @@ class IntegrationRequestHandler implements A2ARequestHandler {
     return agentMessage(`echo: ${textFrom(params)}`);
   }
 
-  async *sendMessageStream(): AsyncGenerator<Task, void, undefined> {
+  async *sendMessageStream(): AsyncGenerator<Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent, void, undefined> {
     yield {
       kind: 'task',
       id: 'task-real',

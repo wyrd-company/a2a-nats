@@ -1,10 +1,21 @@
 export const A2A_NATS_PROTOCOL = 'a2a-nats/1';
 export const DEFAULT_A2A_NATS_NAMESPACE = 'a2a';
 export const NATS_TRANSPORT_PROTOCOL_NAME = 'NATS';
+export const NATS_JETSTREAM_TRANSPORT_PROTOCOL_NAME = 'NATS+JS';
 
 export interface A2ANatsAgentSubjectOptions {
   readonly namespace?: string;
   readonly agentId: string;
+}
+
+export interface A2AJetStreamRequestSubjectOptions {
+  readonly namespace?: string;
+  readonly agentId: string;
+}
+
+export interface A2AJetStreamResponseSubjectOptions {
+  readonly namespace?: string;
+  readonly clientId: string;
 }
 
 export interface A2ANatsAgentCardKeyOptions {
@@ -16,6 +27,18 @@ export function a2aNatsAgentSubject(options: A2ANatsAgentSubjectOptions): string
   const namespace = sanitizeSubjectToken(options.namespace ?? DEFAULT_A2A_NATS_NAMESPACE);
   const agentId = sanitizeSubjectToken(options.agentId);
   return `${namespace}.agent.${agentId}.rpc`;
+}
+
+export function a2aJetStreamRequestSubject(options: A2AJetStreamRequestSubjectOptions): string {
+  const namespace = sanitizeSubjectToken(options.namespace ?? DEFAULT_A2A_NATS_NAMESPACE);
+  const agentId = sanitizeSubjectToken(options.agentId);
+  return `${namespace}.agent.${agentId}.requests`;
+}
+
+export function a2aJetStreamResponseSubject(options: A2AJetStreamResponseSubjectOptions): string {
+  const namespace = sanitizeSubjectToken(options.namespace ?? DEFAULT_A2A_NATS_NAMESPACE);
+  const clientId = sanitizeSubjectToken(options.clientId);
+  return `${namespace}.client.${clientId}.responses`;
 }
 
 export function a2aNatsAgentCardKey(options: A2ANatsAgentCardKeyOptions): string {
@@ -39,7 +62,7 @@ export function natsSubjectFromAgentUrl(url: string): string {
   }
 
   const parsed = new URL(trimmed);
-  if (parsed.protocol !== 'nats:') {
+  if (parsed.protocol !== 'nats:' && parsed.protocol !== 'nats+js:') {
     throw new Error(`Unsupported A2A NATS URL protocol: ${parsed.protocol}`);
   }
 
