@@ -36,6 +36,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
+    "prepack": "npm run clean && npm run build",
     "test": "node --test --import tsx test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify": "npm run typecheck && npm test && npm run build"
