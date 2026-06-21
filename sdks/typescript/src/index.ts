@@ -32,6 +32,10 @@ export type {
 } from './registry.js';
 
 export {
+  A2A_NATS_TRANSPORT_EXTENSION_URI,
+  a2aNatsTransportExtension,
+  type A2aNatsTransportExtensionDeclaration,
+  type A2aNatsTransportExtensionOptions,
   A2A_NATS_PROTOCOL,
   DEFAULT_A2A_NATS_NAMESPACE,
   NATS_JETSTREAM_TRANSPORT_PROTOCOL_NAME,
