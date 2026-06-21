@@ -61,6 +61,28 @@ const agentCard = {
 };
 ```
 
+Agent cards can also declare the NATS transport extension:
+
+```ts
+import { a2aNatsTransportExtension } from '@wyrd-company/a2a-nats';
+
+const agentCard = {
+  // ...
+  capabilities: {
+    streaming: true,
+    extensions: [
+      a2aNatsTransportExtension(),
+    ],
+  },
+};
+```
+
+The extension URI is:
+
+```text
+https://wyrd.company/a2a/extensions/nats-transport/v1
+```
+
 ## AgentCard Registry
 
 For NATS-native discovery, publish AgentCards to a dedicated JetStream KV bucket.

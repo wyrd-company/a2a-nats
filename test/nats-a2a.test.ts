@@ -16,11 +16,14 @@ import type { A2ARequestHandler } from '@a2a-js/sdk/server';
 
 import {
   NATS_TRANSPORT_PROTOCOL_NAME,
+  A2A_NATS_PROTOCOL,
+  A2A_NATS_TRANSPORT_EXTENSION_URI,
   NATS_JETSTREAM_TRANSPORT_PROTOCOL_NAME,
   NatsA2AClientTransport,
   NatsA2AServer,
   a2aJetStreamRequestSubject,
   a2aJetStreamResponseSubject,
+  a2aNatsTransportExtension,
   a2aNatsAgentCardKey,
   a2aNatsAgentCardNamespaceFilter,
   a2aNatsAgentSubject,
@@ -100,6 +103,15 @@ test('parses NATS agent URLs and exposes the NATS protocol name', () => {
     'server-a.agents.agent-a'
   );
   assert.equal(a2aNatsAgentCardNamespaceFilter('server-a'), 'server-a.agents.*');
+});
+
+test('declares the A2A NATS transport extension', () => {
+  const extension = a2aNatsTransportExtension();
+
+  assert.equal(extension.uri, A2A_NATS_TRANSPORT_EXTENSION_URI);
+  assert.equal(extension.required, false);
+  assert.equal(extension.params.protocol, A2A_NATS_PROTOCOL);
+  assert.deepEqual(extension.params.transports, ['NATS', 'NATS+JS']);
 });
 
 class StubRequestHandler implements A2ARequestHandler {

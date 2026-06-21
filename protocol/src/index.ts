@@ -1,4 +1,14 @@
 export {
+  A2A_NATS_TRANSPORT_EXTENSION_URI,
+  a2aNatsTransportExtension,
+} from './extensions.js';
+
+export type {
+  A2aNatsTransportExtensionDeclaration,
+  A2aNatsTransportExtensionOptions,
+} from './extensions.js';
+
+export {
   A2A_NATS_PROTOCOL,
   DEFAULT_A2A_NATS_NAMESPACE,
   NATS_JETSTREAM_TRANSPORT_PROTOCOL_NAME,
