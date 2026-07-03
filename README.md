@@ -31,15 +31,55 @@ than inventing language-specific wire formats.
 
 ## Wire Contract
 
-Unary calls publish an `a2a-nats/1` request frame to an agent subject and receive
-one JSON-RPC response on the NATS reply subject.
+Unary calls publish an `a2a-nats/2` request frame to an agent subject and
+receive one `a2a-nats/2` response frame on the NATS reply subject. Frames carry
+canonical JSON produced by the A2A v1.0 SDK generated `toJSON`/`fromJSON`
+functions; they do not use JSON-RPC envelopes.
+
+```json
+{
+  "protocol": "a2a-nats/2",
+  "method": "sendMessage",
+  "payload": {
+    "message": {
+      "messageId": "message-1",
+      "role": "ROLE_USER",
+      "parts": [{ "text": "hello", "mediaType": "text/plain" }]
+    }
+  }
+}
+```
+
+`method` is the v1.0 SDK `Transport` method name:
+
+- `getExtendedAgentCard`
+- `sendMessage`
+- `sendMessageStream`
+- `createTaskPushNotificationConfig`
+- `getTaskPushNotificationConfig`
+- `listTaskPushNotificationConfig`
+- `deleteTaskPushNotificationConfig`
+- `getTask`
+- `cancelTask`
+- `listTasks`
+- `resubscribeTask`
+
+Unary `response` frames contain canonical JSON for the corresponding v1.0
+response message or aggregate response type. For example, `sendMessage` carries
+`SendMessageResponse`, while `getTask` and `cancelTask` carry `Task`.
 
 Streaming calls publish the same request frame with a generated reply inbox. The
 server publishes stream frames to that inbox:
 
-- `response`: contains one A2A JSON-RPC response event.
+- `response`: contains canonical JSON for one v1.0 `StreamResponse`.
+- `error`: contains a structured A2A error payload with `name`, `message`, and
+  `google.rpc.ErrorInfo`-style details so clients can rethrow typed SDK errors.
 - `complete`: marks normal stream completion.
 - `transport-error`: reports a transport-level stream failure.
+
+NATS service parameters ride NATS message headers. Clients send `A2A-Version:
+1.0` on each request. Extension activations use `A2A-Extensions`, matching the
+HTTP binding header name.
 
 Agent subjects can be generated with `a2aNatsAgentSubject()`:
 
@@ -50,14 +90,19 @@ const subject = a2aNatsAgentSubject({ namespace: 'a2a', agentId: 'agent-a' });
 // a2a.agent.agent-a.rpc
 ```
 
-Agent cards should advertise NATS with `preferredTransport` or
-`additionalInterfaces`:
+Agent cards advertise NATS with v1.0 `supportedInterfaces`:
 
 ```ts
 const agentCard = {
   // ...
-  url: 'nats://a2a.agent.agent-a.rpc',
-  preferredTransport: 'NATS',
+  supportedInterfaces: [
+    {
+      url: 'nats://a2a.agent.agent-a.rpc',
+      protocolBinding: 'NATS',
+      protocolVersion: '1.0',
+      tenant: '',
+    },
+  ],
 };
 ```
 
@@ -169,10 +214,12 @@ Agent cards can advertise this as a separate interface:
 ```ts
 const agentCard = {
   // ...
-  additionalInterfaces: [
+  supportedInterfaces: [
     {
-      transport: 'NATS+JS',
       url: 'nats+js://server-a/agent/agent-a/requests',
+      protocolBinding: 'NATS+JS',
+      protocolVersion: '1.0',
+      tenant: '',
     },
   ],
 };
@@ -184,6 +231,7 @@ when streams are provisioned by operations.
 ## TypeScript Client
 
 ```ts
+import { Role } from '@a2a-js/sdk';
 import { ClientFactory, ClientFactoryOptions } from '@a2a-js/sdk/client';
 import { connect } from '@nats-io/transport-node';
 import { NatsTransportFactory } from '@wyrd-company/a2a-nats';
@@ -199,12 +247,24 @@ const factory = new ClientFactory(
 
 const client = await factory.createFromAgentCard(agentCard);
 const response = await client.sendMessage({
+  tenant: '',
   message: {
-    kind: 'message',
-    role: 'user',
     messageId: crypto.randomUUID(),
-    parts: [{ kind: 'text', text: 'hello' }],
+    contextId: '',
+    taskId: '',
+    role: Role.ROLE_USER,
+    parts: [{
+      content: { $case: 'text', value: 'hello' },
+      metadata: undefined,
+      filename: '',
+      mediaType: 'text/plain',
+    }],
+    metadata: undefined,
+    extensions: [],
+    referenceTaskIds: [],
   },
+  configuration: undefined,
+  metadata: undefined,
 });
 ```
 

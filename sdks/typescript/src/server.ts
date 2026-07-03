@@ -1,9 +1,27 @@
-import { HTTP_EXTENSION_HEADER, Extensions, type JSONRPCResponse } from '@a2a-js/sdk';
-import { A2AError, JsonRpcTransportHandler, ServerCallContext, type A2ARequestHandler } from '@a2a-js/sdk/server';
+import {
+  A2A_PROTOCOL_VERSION,
+  A2A_VERSION_HEADER,
+  HTTP_EXTENSION_HEADER,
+  Extensions,
+  type SendMessageResponse,
+} from '@a2a-js/sdk';
+import { ServerCallContext, type A2ARequestHandler } from '@a2a-js/sdk/server';
 
 import { A2A_NATS_PROTOCOL, type A2ANatsStreamFrame } from '../../../protocol/src/index.js';
-import { decodeRequestFrame, encodeJson } from './codec.js';
-import type { NatsConnectionLike, NatsMsgLike } from './transport.js';
+import {
+  decodeRequestFrame,
+  decodeRequestPayload,
+  encodeJson,
+  encodeStreamResponseFrame,
+  encodeUnaryResponseFrame,
+  sendMessageResponseFromResult,
+} from './codec.js';
+import { errorToFramePayload } from './errors.js';
+import {
+  serviceParametersFromHeaders,
+  type NatsConnectionLike,
+  type NatsMsgLike,
+} from './transport.js';
 
 export interface NatsA2AServerOptions {
   readonly connection: NatsConnectionLike;
@@ -13,13 +31,11 @@ export interface NatsA2AServerOptions {
 }
 
 export class NatsA2AServer {
-  private readonly transportHandler: JsonRpcTransportHandler;
   private readonly subscription: AsyncIterable<NatsMsgLike> & { unsubscribe(): void };
   private readonly readyPromise: Promise<void>;
   private closed = false;
 
   constructor(private readonly options: NatsA2AServerOptions) {
-    this.transportHandler = new JsonRpcTransportHandler(options.requestHandler);
     this.subscription = options.connection.subscribe(options.subject, { queue: options.queue });
     this.readyPromise = options.connection.flush?.() ?? Promise.resolve();
     void this.serveLoop();
@@ -49,94 +65,168 @@ export class NatsA2AServer {
   }
 
   private async handleMessage(message: NatsMsgLike): Promise<void> {
-    let requestId: string | number | null = null;
+    let requestId: string | undefined;
     try {
       const frame = decodeRequestFrame(message.data);
-      requestId = frame.request.id ?? null;
-      const response = await this.transportHandler.handle(
-        frame.request,
-        this.createContext(frame.serviceParameters)
-      );
+      requestId = frame.requestId;
+      const context = createContext(serviceParametersFromHeaders(message.headers));
 
-      if (isAsyncIterable(response)) {
-        await this.publishStream(message, requestId, response);
-      } else {
-        this.respondUnary(message, response);
+      switch (frame.method) {
+        case 'getExtendedAgentCard':
+          this.respondUnary(
+            message,
+            encodeUnaryResponseFrame(
+              frame.method,
+              await this.options.requestHandler.getAuthenticatedExtendedAgentCard(
+                decodeRequestPayload(frame),
+                context
+              ),
+              requestId
+            )
+          );
+          return;
+        case 'sendMessage': {
+          const result = await this.options.requestHandler.sendMessage(decodeRequestPayload(frame), context);
+          this.respondUnary(
+            message,
+            encodeUnaryResponseFrame<SendMessageResponse>(
+              frame.method,
+              sendMessageResponseFromResult(result),
+              requestId
+            )
+          );
+          return;
+        }
+        case 'sendMessageStream':
+          await this.publishStream(
+            message,
+            requestId,
+            this.options.requestHandler.sendMessageStream(decodeRequestPayload(frame), context)
+          );
+          return;
+        case 'createTaskPushNotificationConfig':
+          this.respondUnary(
+            message,
+            encodeUnaryResponseFrame(
+              frame.method,
+              await this.options.requestHandler.createTaskPushNotificationConfig(
+                decodeRequestPayload(frame),
+                context
+              ),
+              requestId
+            )
+          );
+          return;
+        case 'getTaskPushNotificationConfig':
+          this.respondUnary(
+            message,
+            encodeUnaryResponseFrame(
+              frame.method,
+              await this.options.requestHandler.getTaskPushNotificationConfig(
+                decodeRequestPayload(frame),
+                context
+              ),
+              requestId
+            )
+          );
+          return;
+        case 'listTaskPushNotificationConfig':
+          this.respondUnary(
+            message,
+            encodeUnaryResponseFrame(
+              frame.method,
+              await this.options.requestHandler.listTaskPushNotificationConfigs(
+                decodeRequestPayload(frame),
+                context
+              ),
+              requestId
+            )
+          );
+          return;
+        case 'deleteTaskPushNotificationConfig':
+          await this.options.requestHandler.deleteTaskPushNotificationConfig(
+            decodeRequestPayload(frame),
+            context
+          );
+          this.respondUnary(message, encodeUnaryResponseFrame(frame.method, {}, requestId));
+          return;
+        case 'getTask':
+          this.respondUnary(
+            message,
+            encodeUnaryResponseFrame(
+              frame.method,
+              await this.options.requestHandler.getTask(decodeRequestPayload(frame), context),
+              requestId
+            )
+          );
+          return;
+        case 'cancelTask':
+          this.respondUnary(
+            message,
+            encodeUnaryResponseFrame(
+              frame.method,
+              await this.options.requestHandler.cancelTask(decodeRequestPayload(frame), context),
+              requestId
+            )
+          );
+          return;
+        case 'listTasks':
+          this.respondUnary(
+            message,
+            encodeUnaryResponseFrame(
+              frame.method,
+              await this.options.requestHandler.listTasks(decodeRequestPayload(frame), context),
+              requestId
+            )
+          );
+          return;
+        case 'resubscribeTask':
+          await this.publishStream(
+            message,
+            requestId,
+            this.options.requestHandler.resubscribe(decodeRequestPayload(frame), context)
+          );
+          return;
       }
     } catch (error) {
-      const response = this.errorResponse(requestId, error);
-      if (message.reply) {
-        this.options.connection.publish(message.reply, encodeJson(response));
-      } else {
-        message.respond?.(encodeJson(response));
-      }
+      this.respondUnary(message, encodeJson(errorFrame(requestId, error)));
     }
   }
 
-  private respondUnary(message: NatsMsgLike, response: JSONRPCResponse): void {
-    if (message.respond?.(encodeJson(response))) {
+  private respondUnary(message: NatsMsgLike, response: Uint8Array): void {
+    if (message.respond?.(response)) {
       return;
     }
     if (message.reply) {
-      this.options.connection.publish(message.reply, encodeJson(response));
+      this.options.connection.publish(message.reply, response);
     }
   }
 
   private async publishStream(
     message: NatsMsgLike,
-    requestId: string | number | null,
-    responseStream: AsyncGenerator<JSONRPCResponse, void, undefined>
+    requestId: string | undefined,
+    responseStream: AsyncGenerator<import('@a2a-js/sdk').StreamResponse, void, undefined>
   ): Promise<void> {
     if (!message.reply) {
-      this.respondUnary(message, this.errorResponse(requestId, new Error('Streaming requests require a NATS reply subject.')));
+      this.respondUnary(message, encodeJson(errorFrame(requestId, new Error('Streaming requests require a NATS reply subject.'))));
       return;
     }
 
     try {
       for await (const response of responseStream) {
-        const frame: A2ANatsStreamFrame = {
-          protocol: A2A_NATS_PROTOCOL,
-          kind: 'response',
-          response,
-        };
-        this.options.connection.publish(message.reply, encodeJson(frame));
+        this.options.connection.publish(message.reply, encodeStreamResponseFrame(response, requestId));
       }
       this.options.connection.publish(
         message.reply,
         encodeJson({
           protocol: A2A_NATS_PROTOCOL,
           kind: 'complete',
-          id: requestId,
+          requestId,
         } satisfies A2ANatsStreamFrame)
       );
     } catch (error) {
-      this.options.connection.publish(
-        message.reply,
-        encodeJson({
-          protocol: A2A_NATS_PROTOCOL,
-          kind: 'transport-error',
-          id: requestId,
-          message: error instanceof Error ? error.message : 'A2A NATS stream failed',
-        } satisfies A2ANatsStreamFrame)
-      );
+      this.options.connection.publish(message.reply, encodeJson(errorFrame(requestId, error)));
     }
-  }
-
-  private createContext(serviceParameters: Record<string, string> | undefined): ServerCallContext | undefined {
-    const extensionParameter = serviceParameters?.[HTTP_EXTENSION_HEADER];
-    return extensionParameter ? new ServerCallContext(Extensions.parseServiceParameter(extensionParameter)) : undefined;
-  }
-
-  private errorResponse(id: string | number | null, error: unknown): JSONRPCResponse {
-    const a2aError =
-      error instanceof A2AError
-        ? error
-        : A2AError.internalError(error instanceof Error ? error.message : 'A2A NATS transport error');
-    return {
-      jsonrpc: '2.0',
-      id,
-      error: a2aError.toJSONRPCError(),
-    };
   }
 }
 
@@ -144,7 +234,18 @@ export function serveA2AOverNats(options: NatsA2AServerOptions): NatsA2AServer {
   return new NatsA2AServer(options);
 }
 
-function isAsyncIterable<T>(value: unknown): value is AsyncGenerator<T, void, undefined> {
-  return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
+export function createContext(serviceParameters: Record<string, string>): ServerCallContext {
+  return new ServerCallContext({
+    requestedExtensions: Extensions.parseServiceParameter(serviceParameters[HTTP_EXTENSION_HEADER]),
+    requestedVersion: serviceParameters[A2A_VERSION_HEADER] ?? A2A_PROTOCOL_VERSION,
+  });
 }
 
+export function errorFrame(requestId: string | undefined, error: unknown): A2ANatsStreamFrame {
+  return {
+    protocol: A2A_NATS_PROTOCOL,
+    kind: 'error',
+    requestId,
+    error: errorToFramePayload(error),
+  };
+}

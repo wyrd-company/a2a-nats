@@ -1,4 +1,4 @@
-import type { AgentCard } from '@a2a-js/sdk';
+import { AgentCard } from '@a2a-js/sdk';
 import { Kvm, type KV } from '@nats-io/kv';
 import type { NatsConnection } from '@nats-io/transport-node';
 
@@ -40,7 +40,7 @@ export class JetStreamKvAgentCardRegistry {
   async publish(options: PublishAgentCardOptions): Promise<AgentCardRegistryEntry> {
     const bucket = await this.bucketPromise;
     const key = this.keyFor(options.agentId);
-    const revision = await bucket.put(key, encodeJson(options.card));
+    const revision = await bucket.put(key, encodeJson(AgentCard.toJSON(options.card)));
     return {
       key,
       namespace: this.options.namespace,
@@ -62,7 +62,7 @@ export class JetStreamKvAgentCardRegistry {
       namespace: this.options.namespace,
       agentId,
       revision: entry.revision,
-      card: decodeJson(entry.value) as AgentCard,
+      card: AgentCard.fromJSON(decodeJson(entry.value)),
     };
   }
 

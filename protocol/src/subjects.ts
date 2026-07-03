@@ -1,4 +1,4 @@
-export const A2A_NATS_PROTOCOL = 'a2a-nats/1';
+export const A2A_NATS_PROTOCOL = 'a2a-nats/2';
 export const DEFAULT_A2A_NATS_NAMESPACE = 'a2a';
 export const NATS_TRANSPORT_PROTOCOL_NAME = 'NATS';
 export const NATS_JETSTREAM_TRANSPORT_PROTOCOL_NAME = 'NATS+JS';

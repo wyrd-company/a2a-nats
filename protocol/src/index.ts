@@ -24,8 +24,14 @@ export {
 
 export type {
   A2ANatsRequestFrame,
+  A2ANatsErrorFramePayload,
+  A2ANatsErrorInfo,
   A2ANatsStreamCompleteFrame,
+  A2ANatsStreamErrorFrame,
   A2ANatsStreamFrame,
   A2ANatsStreamResponseFrame,
   A2ANatsStreamTransportErrorFrame,
+  A2ANatsTransportMethod,
+  A2ANatsUnaryErrorFrame,
+  A2ANatsUnaryFrame,
 } from './wire.js';

@@ -1,49 +1,57 @@
-import type {
+import {
+  A2A_PROTOCOL_VERSION,
+  A2A_VERSION_HEADER,
   AgentCard,
-  CancelTaskSuccessResponse,
-  DeleteTaskPushNotificationConfigParams,
-  GetAuthenticatedExtendedCardSuccessResponse,
-  GetTaskPushNotificationConfigParams,
-  GetTaskPushNotificationConfigSuccessResponse,
-  GetTaskSuccessResponse,
-  JSONRPCRequest,
-  JSONRPCResponse,
-  ListTaskPushNotificationConfigParams,
-  ListTaskPushNotificationConfigSuccessResponse,
-  Message,
-  MessageSendParams,
-  SendMessageSuccessResponse,
-  SetTaskPushNotificationConfigSuccessResponse,
+  CancelTaskRequest,
+  DeleteTaskPushNotificationConfigRequest,
+  GetExtendedAgentCardRequest,
+  GetTaskPushNotificationConfigRequest,
+  GetTaskRequest,
+  ListTaskPushNotificationConfigsRequest,
+  ListTaskPushNotificationConfigsResponse,
+  ListTasksRequest,
+  ListTasksResponse,
+  StreamResponse,
+  SubscribeToTaskRequest,
   Task,
-  TaskArtifactUpdateEvent,
-  TaskIdParams,
   TaskPushNotificationConfig,
-  TaskQueryParams,
-  TaskStatusUpdateEvent,
+  type SendMessageRequest,
+  type SendMessageResponse,
+  type SendMessageResult,
 } from '@a2a-js/sdk';
-import type { Transport, TransportFactory, RequestOptions } from '@a2a-js/sdk/client';
-import { createInbox, type NatsConnection, type Subscription } from '@nats-io/transport-node';
+import { createInbox, headers, type MsgHdrs, type NatsConnection, type Subscription } from '@nats-io/transport-node';
+import type { RequestOptions, Transport, TransportFactory } from '@a2a-js/sdk/client';
 
-import { NATS_TRANSPORT_PROTOCOL_NAME, natsSubjectFromAgentUrl, type A2ANatsStreamFrame } from '../../../protocol/src/index.js';
-import { decodeJson, decodeStreamFrame, encodeJson, encodeRequestFrame } from './codec.js';
-import { mapJsonRpcError } from './errors.js';
-
-type A2AStreamEventData = Message | Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent;
-type SendMessageResult = Message | Task;
+import {
+  NATS_TRANSPORT_PROTOCOL_NAME,
+  natsSubjectFromAgentUrl,
+  type A2ANatsStreamFrame,
+  type A2ANatsTransportMethod,
+} from '../../../protocol/src/index.js';
+import {
+  decodeResponsePayload,
+  decodeStreamFrame,
+  decodeUnaryFrame,
+  encodeRequestFrame,
+  resultFromSendMessageResponse,
+} from './codec.js';
+import { framePayloadToError } from './errors.js';
 
 export interface NatsMsgLike {
   readonly data: Uint8Array;
   readonly reply?: string;
-  respond?(data?: Uint8Array): boolean;
+  readonly headers?: MsgHdrs;
+  respond?(data?: Uint8Array, options?: { headers?: MsgHdrs }): boolean;
 }
 
 export interface NatsRequestOptions {
   readonly timeout?: number;
   readonly signal?: AbortSignal;
+  readonly headers?: MsgHdrs;
 }
 
 export interface NatsConnectionLike {
-  publish(subject: string, data?: Uint8Array, options?: { reply?: string }): void;
+  publish(subject: string, data?: Uint8Array, options?: { reply?: string; headers?: MsgHdrs }): void;
   request(subject: string, data?: Uint8Array, options?: NatsRequestOptions): Promise<NatsMsgLike>;
   subscribe(subject: string, options?: { queue?: string }): AsyncIterable<NatsMsgLike> & { unsubscribe(): void };
   flush?(): Promise<void>;
@@ -88,128 +96,106 @@ export class NatsA2AClientTransport implements Transport {
     this.createInbox = options.createInbox ?? (() => createInbox());
   }
 
-  async getExtendedAgentCard(options?: RequestOptions): Promise<AgentCard> {
-    const response = await this.sendRpcRequest<undefined, GetAuthenticatedExtendedCardSuccessResponse>(
-      'agent/getAuthenticatedExtendedCard',
-      undefined,
-      options
-    );
-    return response.result;
+  get protocolName(): string {
+    return NATS_TRANSPORT_PROTOCOL_NAME;
   }
 
-  async sendMessage(params: MessageSendParams, options?: RequestOptions): Promise<SendMessageResult> {
-    const response = await this.sendRpcRequest<MessageSendParams, SendMessageSuccessResponse>(
-      'message/send',
-      params,
-      options
-    );
-    return response.result;
+  get protocolVersion(): string {
+    return A2A_PROTOCOL_VERSION;
+  }
+
+  async getExtendedAgentCard(params: GetExtendedAgentCardRequest, options?: RequestOptions): Promise<AgentCard> {
+    return this.sendUnaryRequest('getExtendedAgentCard', params, options);
+  }
+
+  async sendMessage(params: SendMessageRequest, options?: RequestOptions): Promise<SendMessageResult> {
+    const response = await this.sendUnaryRequest<SendMessageRequest, SendMessageResponse>('sendMessage', params, options);
+    return resultFromSendMessageResponse(response);
   }
 
   async *sendMessageStream(
-    params: MessageSendParams,
+    params: SendMessageRequest,
     options?: RequestOptions
-  ): AsyncGenerator<A2AStreamEventData, void, undefined> {
-    yield* this.sendStreamingRequest<MessageSendParams>('message/stream', params, options);
+  ): AsyncGenerator<StreamResponse, void, undefined> {
+    yield* this.sendStreamingRequest('sendMessageStream', params, options);
   }
 
-  async setTaskPushNotificationConfig(
+  async createTaskPushNotificationConfig(
     params: TaskPushNotificationConfig,
     options?: RequestOptions
   ): Promise<TaskPushNotificationConfig> {
-    const response = await this.sendRpcRequest<
-      TaskPushNotificationConfig,
-      SetTaskPushNotificationConfigSuccessResponse
-    >('tasks/pushNotificationConfig/set', params, options);
-    return response.result;
+    return this.sendUnaryRequest('createTaskPushNotificationConfig', params, options);
   }
 
   async getTaskPushNotificationConfig(
-    params: GetTaskPushNotificationConfigParams,
+    params: GetTaskPushNotificationConfigRequest,
     options?: RequestOptions
   ): Promise<TaskPushNotificationConfig> {
-    const response = await this.sendRpcRequest<
-      GetTaskPushNotificationConfigParams,
-      GetTaskPushNotificationConfigSuccessResponse
-    >('tasks/pushNotificationConfig/get', params, options);
-    return response.result;
+    return this.sendUnaryRequest('getTaskPushNotificationConfig', params, options);
   }
 
   async listTaskPushNotificationConfig(
-    params: ListTaskPushNotificationConfigParams,
+    params: ListTaskPushNotificationConfigsRequest,
     options?: RequestOptions
-  ): Promise<TaskPushNotificationConfig[]> {
-    const response = await this.sendRpcRequest<
-      ListTaskPushNotificationConfigParams,
-      ListTaskPushNotificationConfigSuccessResponse
-    >('tasks/pushNotificationConfig/list', params, options);
-    return response.result;
+  ): Promise<ListTaskPushNotificationConfigsResponse> {
+    return this.sendUnaryRequest('listTaskPushNotificationConfig', params, options);
   }
 
   async deleteTaskPushNotificationConfig(
-    params: DeleteTaskPushNotificationConfigParams,
+    params: DeleteTaskPushNotificationConfigRequest,
     options?: RequestOptions
   ): Promise<void> {
-    await this.sendRpcRequest<DeleteTaskPushNotificationConfigParams, JSONRPCResponse>(
-      'tasks/pushNotificationConfig/delete',
-      params,
-      options
-    );
+    await this.sendUnaryRequest('deleteTaskPushNotificationConfig', params, options);
   }
 
-  async getTask(params: TaskQueryParams, options?: RequestOptions): Promise<Task> {
-    const response = await this.sendRpcRequest<TaskQueryParams, GetTaskSuccessResponse>(
-      'tasks/get',
-      params,
-      options
-    );
-    return response.result;
+  async getTask(params: GetTaskRequest, options?: RequestOptions): Promise<Task> {
+    return this.sendUnaryRequest('getTask', params, options);
   }
 
-  async cancelTask(params: TaskIdParams, options?: RequestOptions): Promise<Task> {
-    const response = await this.sendRpcRequest<TaskIdParams, CancelTaskSuccessResponse>(
-      'tasks/cancel',
-      params,
-      options
-    );
-    return response.result;
+  async cancelTask(params: CancelTaskRequest, options?: RequestOptions): Promise<Task> {
+    return this.sendUnaryRequest('cancelTask', params, options);
+  }
+
+  async listTasks(params: ListTasksRequest, options?: RequestOptions): Promise<ListTasksResponse> {
+    return this.sendUnaryRequest('listTasks', params, options);
   }
 
   async *resubscribeTask(
-    params: TaskIdParams,
+    params: SubscribeToTaskRequest,
     options?: RequestOptions
-  ): AsyncGenerator<A2AStreamEventData, void, undefined> {
-    yield* this.sendStreamingRequest<TaskIdParams>('tasks/resubscribe', params, options);
+  ): AsyncGenerator<StreamResponse, void, undefined> {
+    yield* this.sendStreamingRequest('resubscribeTask', params, options);
   }
 
-  private async sendRpcRequest<TParams, TResponse extends JSONRPCResponse>(
-    method: string,
-    params: TParams,
+  private async sendUnaryRequest<TRequest, TResponse>(
+    method: A2ANatsTransportMethod,
+    params: TRequest,
     options?: RequestOptions
   ): Promise<TResponse> {
-    const request = this.createRequest(method, params);
+    const requestId = this.nextRequestId();
     const message = await this.options.connection.request(
       this.options.subject,
-      encodeRequestFrame(request, options?.serviceParameters),
+      encodeRequestFrame(method, params, undefined, requestId),
       {
         timeout: this.requestTimeoutMs,
         signal: options?.signal,
+        headers: headersFromServiceParameters(options?.serviceParameters),
       }
     );
-    const response = decodeJson(message.data) as JSONRPCResponse;
-    this.assertResponseId(response, request.id, method);
-    if ('error' in response) {
-      throw mapJsonRpcError(response);
+    const frame = decodeUnaryFrame(message.data);
+    this.assertRequestId(frame.requestId, requestId, method);
+    if (frame.kind === 'error') {
+      throw framePayloadToError(frame.error);
     }
-    return response as TResponse;
+    return decodeResponsePayload<TResponse>(method, frame.payload);
   }
 
-  private async *sendStreamingRequest<TParams>(
-    method: string,
-    params: TParams,
+  private async *sendStreamingRequest<TRequest>(
+    method: A2ANatsTransportMethod,
+    params: TRequest,
     options?: RequestOptions
-  ): AsyncGenerator<A2AStreamEventData, void, undefined> {
-    const request = this.createRequest(method, params);
+  ): AsyncGenerator<StreamResponse, void, undefined> {
+    const requestId = this.nextRequestId();
     const reply = this.createInbox();
     const subscription = this.options.connection.subscribe(reply) as Subscription | (AsyncIterable<NatsMsgLike> & { unsubscribe(): void });
     const abort = () => subscription.unsubscribe();
@@ -219,31 +205,26 @@ export class NatsA2AClientTransport implements Transport {
       await this.options.connection.flush?.();
       this.options.connection.publish(
         this.options.subject,
-        encodeRequestFrame(request, options?.serviceParameters),
-        { reply }
+        encodeRequestFrame(method, params, undefined, requestId),
+        {
+          reply,
+          headers: headersFromServiceParameters(options?.serviceParameters),
+        }
       );
 
       for await (const message of subscription) {
         const frame = decodeStreamFrame(message.data);
+        this.assertRequestId(frame.requestId, requestId, method);
         if (frame.kind === 'complete') {
-          if (frame.id !== request.id) {
-            throw new Error(`NATS stream completion ID mismatch for ${method}. Expected ${request.id}, got ${frame.id}.`);
-          }
           return;
         }
         if (frame.kind === 'transport-error') {
           throw new Error(frame.message);
         }
-
-        const response = this.responseFromFrame(frame);
-        this.assertResponseId(response, request.id, method);
-        if ('error' in response) {
-          throw mapJsonRpcError(response);
+        if (frame.kind === 'error') {
+          throw framePayloadToError(frame.error);
         }
-        if (!('result' in response)) {
-          throw new Error(`NATS stream response for ${method} did not contain a result.`);
-        }
-        yield response.result as A2AStreamEventData;
+        yield StreamResponse.fromJSON(frame.payload);
       }
     } finally {
       options?.signal?.removeEventListener('abort', abort);
@@ -251,25 +232,37 @@ export class NatsA2AClientTransport implements Transport {
     }
   }
 
-  private createRequest<TParams>(method: string, params: TParams): JSONRPCRequest {
-    return {
-      jsonrpc: '2.0',
-      method,
-      params: params as JSONRPCRequest['params'],
-      id: this.requestIdCounter++,
-    };
+  private nextRequestId(): string {
+    return String(this.requestIdCounter++);
   }
 
-  private responseFromFrame(frame: A2ANatsStreamFrame): JSONRPCResponse {
-    if (frame.kind !== 'response') {
-      throw new Error(`Unexpected A2A NATS stream frame: ${frame.kind}`);
+  private assertRequestId(
+    actual: string | undefined,
+    expected: string,
+    method: A2ANatsTransportMethod
+  ): void {
+    if (actual !== expected) {
+      throw new Error(`A2A NATS response ID mismatch for ${method}. Expected ${expected}, got ${actual ?? '<missing>'}.`);
     }
-    return frame.response;
   }
+}
 
-  private assertResponseId(response: JSONRPCResponse, requestId: JSONRPCRequest['id'], method: string): void {
-    if (response.id !== requestId) {
-      throw new Error(`JSON-RPC response ID mismatch for ${method}. Expected ${requestId}, got ${response.id}.`);
+export function headersFromServiceParameters(serviceParameters: Record<string, string> | undefined): MsgHdrs {
+  const result = headers();
+  for (const [key, value] of Object.entries(serviceParameters ?? {})) {
+    result.set(key, value);
+  }
+  result.set(A2A_VERSION_HEADER, A2A_PROTOCOL_VERSION);
+  return result;
+}
+
+export function serviceParametersFromHeaders(messageHeaders: MsgHdrs | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, values] of messageHeaders ?? []) {
+    const last = values.at(-1);
+    if (last !== undefined) {
+      result[key] = last;
     }
   }
+  return result;
 }

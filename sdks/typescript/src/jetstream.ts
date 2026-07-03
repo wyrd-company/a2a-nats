@@ -1,27 +1,24 @@
-import type {
+import {
+  A2A_PROTOCOL_VERSION,
   AgentCard,
-  CancelTaskSuccessResponse,
-  DeleteTaskPushNotificationConfigParams,
-  GetAuthenticatedExtendedCardSuccessResponse,
-  GetTaskPushNotificationConfigParams,
-  GetTaskPushNotificationConfigSuccessResponse,
-  GetTaskSuccessResponse,
-  JSONRPCRequest,
-  JSONRPCResponse,
-  ListTaskPushNotificationConfigParams,
-  Message,
-  MessageSendParams,
-  SendMessageSuccessResponse,
-  SetTaskPushNotificationConfigSuccessResponse,
+  CancelTaskRequest,
+  DeleteTaskPushNotificationConfigRequest,
+  GetExtendedAgentCardRequest,
+  GetTaskPushNotificationConfigRequest,
+  GetTaskRequest,
+  ListTaskPushNotificationConfigsRequest,
+  ListTaskPushNotificationConfigsResponse,
+  ListTasksRequest,
+  ListTasksResponse,
+  SendMessageRequest,
+  type SendMessageResponse,
+  StreamResponse,
+  SubscribeToTaskRequest,
   Task,
-  TaskArtifactUpdateEvent,
-  TaskIdParams,
   TaskPushNotificationConfig,
-  TaskQueryParams,
-  TaskStatusUpdateEvent,
+  type SendMessageResult,
 } from '@a2a-js/sdk';
-import { HTTP_EXTENSION_HEADER, Extensions } from '@a2a-js/sdk';
-import { A2AError, JsonRpcTransportHandler, ServerCallContext, type A2ARequestHandler } from '@a2a-js/sdk/server';
+import type { A2ARequestHandler } from '@a2a-js/sdk/server';
 import type { RequestOptions, Transport, TransportFactory } from '@a2a-js/sdk/client';
 import {
   AckPolicy,
@@ -41,12 +38,23 @@ import {
   natsSubjectFromAgentUrl,
   sanitizeSubjectToken,
   type A2ANatsStreamFrame,
+  type A2ANatsTransportMethod,
 } from '../../../protocol/src/index.js';
-import { decodeJson, decodeRequestFrame, decodeStreamFrame, encodeJson, encodeRequestFrame } from './codec.js';
-import { mapJsonRpcError } from './errors.js';
-
-type A2AStreamEventData = Message | Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent;
-type SendMessageResult = Message | Task;
+import {
+  decodeRequestFrame,
+  decodeRequestPayload,
+  decodeResponsePayload,
+  decodeStreamFrame,
+  encodeJson,
+  encodeRequestFrame,
+  encodeStreamResponseFrame,
+  encodeUnaryResponseFrame,
+  resultFromSendMessageResponse,
+  sendMessageResponseFromResult,
+} from './codec.js';
+import { framePayloadToError } from './errors.js';
+import { createContext, errorFrame } from './server.js';
+import { headersFromServiceParameters, serviceParametersFromHeaders } from './transport.js';
 
 export interface JetStreamA2ATransportFactoryOptions {
   readonly connection: NatsConnection;
@@ -121,102 +129,79 @@ export class JetStreamA2AClientTransport implements Transport {
     this.readyPromise = this.initialize();
   }
 
+  get protocolName(): string {
+    return NATS_JETSTREAM_TRANSPORT_PROTOCOL_NAME;
+  }
+
+  get protocolVersion(): string {
+    return A2A_PROTOCOL_VERSION;
+  }
+
   async ready(): Promise<void> {
     await this.readyPromise;
   }
 
-  async getExtendedAgentCard(options?: RequestOptions): Promise<AgentCard> {
-    const response = await this.sendRpcRequest<undefined, GetAuthenticatedExtendedCardSuccessResponse>(
-      'agent/getAuthenticatedExtendedCard',
-      undefined,
-      options
-    );
-    return response.result;
+  async getExtendedAgentCard(params: GetExtendedAgentCardRequest, options?: RequestOptions): Promise<AgentCard> {
+    return this.sendUnaryRequest('getExtendedAgentCard', params, options);
   }
 
-  async sendMessage(params: MessageSendParams, options?: RequestOptions): Promise<SendMessageResult> {
-    const response = await this.sendRpcRequest<MessageSendParams, SendMessageSuccessResponse>(
-      'message/send',
-      params,
-      options
-    );
-    return response.result;
+  async sendMessage(params: SendMessageRequest, options?: RequestOptions): Promise<SendMessageResult> {
+    const response = await this.sendUnaryRequest<SendMessageRequest, SendMessageResponse>('sendMessage', params, options);
+    return resultFromSendMessageResponse(response);
   }
 
   async *sendMessageStream(
-    params: MessageSendParams,
+    params: SendMessageRequest,
     options?: RequestOptions
-  ): AsyncGenerator<A2AStreamEventData, void, undefined> {
-    yield* this.sendStreamingRequest('message/stream', params, options);
+  ): AsyncGenerator<StreamResponse, void, undefined> {
+    yield* this.sendStreamingRequest('sendMessageStream', params, options);
   }
 
-  async setTaskPushNotificationConfig(
+  async createTaskPushNotificationConfig(
     params: TaskPushNotificationConfig,
     options?: RequestOptions
   ): Promise<TaskPushNotificationConfig> {
-    const response = await this.sendRpcRequest<
-      TaskPushNotificationConfig,
-      SetTaskPushNotificationConfigSuccessResponse
-    >('tasks/pushNotificationConfig/set', params, options);
-    return response.result;
+    return this.sendUnaryRequest('createTaskPushNotificationConfig', params, options);
   }
 
   async getTaskPushNotificationConfig(
-    params: GetTaskPushNotificationConfigParams,
+    params: GetTaskPushNotificationConfigRequest,
     options?: RequestOptions
   ): Promise<TaskPushNotificationConfig> {
-    const response = await this.sendRpcRequest<
-      GetTaskPushNotificationConfigParams,
-      GetTaskPushNotificationConfigSuccessResponse
-    >('tasks/pushNotificationConfig/get', params, options);
-    return response.result;
+    return this.sendUnaryRequest('getTaskPushNotificationConfig', params, options);
   }
 
   async listTaskPushNotificationConfig(
-    params: ListTaskPushNotificationConfigParams,
+    params: ListTaskPushNotificationConfigsRequest,
     options?: RequestOptions
-  ): Promise<TaskPushNotificationConfig[]> {
-    const response = await this.sendRpcRequest<
-      ListTaskPushNotificationConfigParams,
-      JSONRPCResponse & { result: TaskPushNotificationConfig[] }
-    >('tasks/pushNotificationConfig/list', params, options);
-    return response.result;
+  ): Promise<ListTaskPushNotificationConfigsResponse> {
+    return this.sendUnaryRequest('listTaskPushNotificationConfig', params, options);
   }
 
   async deleteTaskPushNotificationConfig(
-    params: DeleteTaskPushNotificationConfigParams,
+    params: DeleteTaskPushNotificationConfigRequest,
     options?: RequestOptions
   ): Promise<void> {
-    await this.sendRpcRequest<DeleteTaskPushNotificationConfigParams, JSONRPCResponse>(
-      'tasks/pushNotificationConfig/delete',
-      params,
-      options
-    );
+    await this.sendUnaryRequest('deleteTaskPushNotificationConfig', params, options);
   }
 
-  async getTask(params: TaskQueryParams, options?: RequestOptions): Promise<Task> {
-    const response = await this.sendRpcRequest<TaskQueryParams, GetTaskSuccessResponse>(
-      'tasks/get',
-      params,
-      options
-    );
-    return response.result;
+  async getTask(params: GetTaskRequest, options?: RequestOptions): Promise<Task> {
+    return this.sendUnaryRequest('getTask', params, options);
   }
 
-  async cancelTask(params: TaskIdParams, options?: RequestOptions): Promise<Task> {
-    const response = await this.sendRpcRequest<TaskIdParams, CancelTaskSuccessResponse>(
-      'tasks/cancel',
-      params,
-      options
-    );
-    return response.result;
+  async cancelTask(params: CancelTaskRequest, options?: RequestOptions): Promise<Task> {
+    return this.sendUnaryRequest('cancelTask', params, options);
+  }
+
+  async listTasks(params: ListTasksRequest, options?: RequestOptions): Promise<ListTasksResponse> {
+    return this.sendUnaryRequest('listTasks', params, options);
   }
 
   async *resubscribeTask(
-    params: TaskIdParams,
+    params: SubscribeToTaskRequest,
     options?: RequestOptions
-  ): AsyncGenerator<A2AStreamEventData, void, undefined> {
-    yield* this.sendStreamingRequest('tasks/resubscribe', params, options);
+  ): AsyncGenerator<StreamResponse, void, undefined> {
+    yield* this.sendStreamingRequest('resubscribeTask', params, options);
   }
 
   private async initialize(): Promise<void> {
@@ -227,143 +212,113 @@ export class JetStreamA2AClientTransport implements Transport {
     await ensureStream(this.options.connection, this.responseStream, [this.responseSubject]);
   }
 
-  private async sendRpcRequest<TParams, TResponse extends JSONRPCResponse>(
-    method: string,
-    params: TParams,
+  private async sendUnaryRequest<TRequest, TResponse>(
+    method: A2ANatsTransportMethod,
+    params: TRequest,
     options?: RequestOptions
   ): Promise<TResponse> {
-    const request = this.createRequest(method, params);
-    const consumer = await this.createResponseConsumer(request.id);
+    const requestId = this.nextRequestId();
+    const consumer = await this.createResponseConsumer(requestId);
     try {
-      await this.publishRequest(request, options);
-      const response = await this.nextResponse(consumer, request.id, method);
-      if ('error' in response) {
-        throw mapJsonRpcError(response);
+      await this.publishRequest(method, params, requestId, options);
+      const frame = await this.nextResponseFrame(consumer, requestId, method);
+      if (frame.kind === 'error') {
+        throw framePayloadToError(frame.error);
       }
-      return response as TResponse;
+      if (frame.kind !== 'response') {
+        throw new Error(`JetStream response for ${method} was not a response frame.`);
+      }
+      return decodeResponsePayload<TResponse>(method, frame.payload);
     } finally {
       await consumer.delete();
     }
   }
 
-  private async *sendStreamingRequest<TParams>(
-    method: string,
-    params: TParams,
+  private async *sendStreamingRequest<TRequest>(
+    method: A2ANatsTransportMethod,
+    params: TRequest,
     options?: RequestOptions
-  ): AsyncGenerator<A2AStreamEventData, void, undefined> {
-    const request = this.createRequest(method, params);
-    const consumer = await this.createResponseConsumer(request.id);
+  ): AsyncGenerator<StreamResponse, void, undefined> {
+    const requestId = this.nextRequestId();
+    const consumer = await this.createResponseConsumer(requestId);
     try {
-      await this.publishRequest(request, options);
+      await this.publishRequest(method, params, requestId, options);
       while (true) {
-        const frame = await this.nextStreamFrame(consumer, request.id, method);
+        const frame = await this.nextResponseFrame(consumer, requestId, method);
         if (frame.kind === 'complete') {
           return;
         }
         if (frame.kind === 'transport-error') {
           throw new Error(frame.message);
         }
-
-        const response = frame.response;
-        this.assertResponseId(response, request.id, method);
-        if ('error' in response) {
-          throw mapJsonRpcError(response);
+        if (frame.kind === 'error') {
+          throw framePayloadToError(frame.error);
         }
-        if (!('result' in response)) {
-          throw new Error(`JetStream response for ${method} did not contain a result.`);
-        }
-        yield response.result as A2AStreamEventData;
+        yield StreamResponse.fromJSON(frame.payload);
       }
     } finally {
       await consumer.delete();
     }
   }
 
-  private async publishRequest(request: JSONRPCRequest, options?: RequestOptions): Promise<void> {
+  private async publishRequest<TRequest>(
+    method: A2ANatsTransportMethod,
+    params: TRequest,
+    requestId: string,
+    options?: RequestOptions
+  ): Promise<void> {
     await this.readyPromise;
     const js = jetstream(this.options.connection);
     await js.publish(
       this.options.requestSubject,
-      encodeRequestFrame(request, options?.serviceParameters, this.responseSubject)
+      encodeRequestFrame(method, params, this.responseSubject, requestId),
+      { headers: headersFromServiceParameters(options?.serviceParameters) }
     );
   }
 
-  private async createResponseConsumer(requestId: JSONRPCRequest['id']): Promise<Consumer> {
+  private async createResponseConsumer(requestId: string): Promise<Consumer> {
     await this.readyPromise;
     const jsm = await jetstreamManager(this.options.connection);
-    const durable = durableName(`${this.options.clientId}_${String(requestId)}_responses`);
+    const durable = durableName(`${this.options.clientId}_${requestId}_responses`);
     await addOrUpdateConsumer(jsm, this.responseStream, durable, this.responseSubject);
     return jetstream(this.options.connection).consumers.get(this.responseStream, durable);
   }
 
-  private async nextResponse(
+  private async nextResponseFrame(
     consumer: Consumer,
-    requestId: JSONRPCRequest['id'],
-    method: string
-  ): Promise<JSONRPCResponse> {
-    while (true) {
-      const message = await nextMessage(consumer, this.requestTimeoutMs);
-      const frame = decodeStreamFrame(message.data);
-      message.ack();
-      if (frame.kind !== 'response') {
-        continue;
-      }
-      if (frame.response.id !== requestId) {
-        continue;
-      }
-      return frame.response;
-    }
-  }
-
-  private async nextStreamFrame(
-    consumer: Consumer,
-    requestId: JSONRPCRequest['id'],
-    method: string
+    requestId: string,
+    method: A2ANatsTransportMethod
   ): Promise<A2ANatsStreamFrame> {
     while (true) {
       const message = await nextMessage(consumer, this.requestTimeoutMs);
       const frame = decodeStreamFrame(message.data);
       message.ack();
-      if ('id' in frame && frame.id !== requestId) {
+      if (frame.requestId !== requestId) {
         continue;
       }
-      if (frame.kind === 'response') {
-        if (frame.response.id !== requestId) {
-          continue;
-        }
+      if (frame.kind === 'transport-error' || frame.kind === 'complete' || frame.kind === 'error' || frame.kind === 'response') {
+        return frame;
       }
-      return frame;
+      throw new Error(`Unexpected JetStream response frame for ${method}.`);
     }
   }
 
-  private createRequest<TParams>(method: string, params: TParams): JSONRPCRequest {
-    return {
-      jsonrpc: '2.0',
-      method,
-      params: params as JSONRPCRequest['params'],
-      id: this.requestIdCounter++,
-    };
-  }
-
-  private assertResponseId(response: JSONRPCResponse, requestId: JSONRPCRequest['id'], method: string): void {
-    if (response.id !== requestId) {
-      throw new Error(`JSON-RPC response ID mismatch for ${method}. Expected ${requestId}, got ${response.id}.`);
-    }
+  private nextRequestId(): string {
+    return String(this.requestIdCounter++);
   }
 }
 
 export class JetStreamA2AServer {
-  private readonly transportHandler: JsonRpcTransportHandler;
   private readonly requestStream: string;
   private readonly responseStream: string;
   private readonly durableName: string;
   private readonly pullExpiresMs: number;
   private readonly readyPromise: Promise<Consumer>;
   private readonly servePromise: Promise<void>;
+  private readonly inFlight = new Set<Promise<void>>();
   private closed = false;
 
   constructor(private readonly options: JetStreamA2AServerOptions) {
-    this.transportHandler = new JsonRpcTransportHandler(options.requestHandler);
     this.requestStream = options.requestStream ?? defaultRequestStream;
     this.responseStream = options.responseStream ?? defaultResponseStream;
     this.durableName = durableName(options.durableName ?? `${options.requestSubject}_server`);
@@ -379,6 +334,7 @@ export class JetStreamA2AServer {
   async close(): Promise<void> {
     this.closed = true;
     await this.servePromise;
+    await Promise.allSettled(this.inFlight);
   }
 
   private async initialize(): Promise<Consumer> {
@@ -402,35 +358,28 @@ export class JetStreamA2AServer {
       if (!message) {
         continue;
       }
-      await this.handleMessage(message);
+      const work = this.handleMessage(message).finally(() => this.inFlight.delete(work));
+      this.inFlight.add(work);
     }
   }
 
   private async handleMessage(message: JsMsg): Promise<void> {
-    let requestId: string | number | null = null;
+    let requestId: string | undefined;
     let responseSubject: string | undefined;
     try {
       const frame = decodeRequestFrame(message.data);
-      requestId = frame.request.id ?? null;
+      requestId = frame.requestId;
       responseSubject = frame.responseSubject;
       if (!responseSubject) {
         throw new Error('JetStream A2A request frame did not include responseSubject.');
       }
 
-      const response = await this.transportHandler.handle(
-        frame.request,
-        this.createContext(frame.serviceParameters)
-      );
-
-      if (isAsyncIterable(response)) {
-        await this.publishStream(responseSubject, requestId, response);
-      } else {
-        await this.publishResponse(responseSubject, response);
-      }
+      const context = createContext(serviceParametersFromHeaders(message.headers));
+      await this.dispatch(frame, context, responseSubject);
       message.ack();
     } catch (error) {
       if (responseSubject) {
-        await this.publishResponse(responseSubject, this.errorResponse(requestId, error));
+        await this.publishResponse(responseSubject, errorFrame(requestId, error));
         message.ack();
       } else {
         message.term(error instanceof Error ? error.message : 'Invalid A2A JetStream request');
@@ -438,76 +387,101 @@ export class JetStreamA2AServer {
     }
   }
 
-  private async publishResponse(responseSubject: string, response: JSONRPCResponse): Promise<void> {
-    const js = jetstream(this.options.connection);
-    await js.publish(
-      responseSubject,
-      encodeJson({
-        protocol: A2A_NATS_PROTOCOL,
-        kind: 'response',
-        response,
-      } satisfies A2ANatsStreamFrame)
-    );
+  private async dispatch(
+    frame: ReturnType<typeof decodeRequestFrame>,
+    context: import('@a2a-js/sdk/server').ServerCallContext,
+    responseSubject: string
+  ): Promise<void> {
+    switch (frame.method) {
+      case 'getExtendedAgentCard':
+        await this.publishResponse(
+          responseSubject,
+          responseFrame(frame.method, await this.options.requestHandler.getAuthenticatedExtendedAgentCard(decodeRequestPayload(frame), context), frame.requestId)
+        );
+        return;
+      case 'sendMessage': {
+        const result = await this.options.requestHandler.sendMessage(decodeRequestPayload(frame), context);
+        await this.publishResponse(responseSubject, responseFrame(frame.method, sendMessageResponseFromResult(result), frame.requestId));
+        return;
+      }
+      case 'sendMessageStream':
+        await this.publishStream(responseSubject, frame.requestId, this.options.requestHandler.sendMessageStream(decodeRequestPayload(frame), context));
+        return;
+      case 'createTaskPushNotificationConfig':
+        await this.publishResponse(
+          responseSubject,
+          responseFrame(frame.method, await this.options.requestHandler.createTaskPushNotificationConfig(decodeRequestPayload(frame), context), frame.requestId)
+        );
+        return;
+      case 'getTaskPushNotificationConfig':
+        await this.publishResponse(
+          responseSubject,
+          responseFrame(frame.method, await this.options.requestHandler.getTaskPushNotificationConfig(decodeRequestPayload(frame), context), frame.requestId)
+        );
+        return;
+      case 'listTaskPushNotificationConfig':
+        await this.publishResponse(
+          responseSubject,
+          responseFrame(frame.method, await this.options.requestHandler.listTaskPushNotificationConfigs(decodeRequestPayload(frame), context), frame.requestId)
+        );
+        return;
+      case 'deleteTaskPushNotificationConfig':
+        await this.options.requestHandler.deleteTaskPushNotificationConfig(decodeRequestPayload(frame), context);
+        await this.publishResponse(responseSubject, responseFrame(frame.method, {}, frame.requestId));
+        return;
+      case 'getTask':
+        await this.publishResponse(responseSubject, responseFrame(frame.method, await this.options.requestHandler.getTask(decodeRequestPayload(frame), context), frame.requestId));
+        return;
+      case 'cancelTask':
+        await this.publishResponse(responseSubject, responseFrame(frame.method, await this.options.requestHandler.cancelTask(decodeRequestPayload(frame), context), frame.requestId));
+        return;
+      case 'listTasks':
+        await this.publishResponse(responseSubject, responseFrame(frame.method, await this.options.requestHandler.listTasks(decodeRequestPayload(frame), context), frame.requestId));
+        return;
+      case 'resubscribeTask':
+        await this.publishStream(responseSubject, frame.requestId, this.options.requestHandler.resubscribe(decodeRequestPayload(frame), context));
+        return;
+    }
+  }
+
+  private async publishResponse(responseSubject: string, frame: A2ANatsStreamFrame): Promise<void> {
+    await jetstream(this.options.connection).publish(responseSubject, encodeJson(frame));
   }
 
   private async publishStream(
     responseSubject: string,
-    requestId: string | number | null,
-    responseStream: AsyncGenerator<JSONRPCResponse, void, undefined>
+    requestId: string | undefined,
+    responseStream: AsyncGenerator<StreamResponse, void, undefined>
   ): Promise<void> {
     const js = jetstream(this.options.connection);
     try {
       for await (const response of responseStream) {
-        await js.publish(
-          responseSubject,
-          encodeJson({
-            protocol: A2A_NATS_PROTOCOL,
-            kind: 'response',
-            response,
-          } satisfies A2ANatsStreamFrame)
-        );
+        await js.publish(responseSubject, encodeStreamResponseFrame(response, requestId));
       }
       await js.publish(
         responseSubject,
         encodeJson({
           protocol: A2A_NATS_PROTOCOL,
           kind: 'complete',
-          id: requestId,
+          requestId,
         } satisfies A2ANatsStreamFrame)
       );
     } catch (error) {
-      await js.publish(
-        responseSubject,
-        encodeJson({
-          protocol: A2A_NATS_PROTOCOL,
-          kind: 'transport-error',
-          id: requestId,
-          message: error instanceof Error ? error.message : 'A2A JetStream stream failed',
-        } satisfies A2ANatsStreamFrame)
-      );
+      await js.publish(responseSubject, encodeJson(errorFrame(requestId, error)));
     }
-  }
-
-  private createContext(serviceParameters: Record<string, string> | undefined): ServerCallContext | undefined {
-    const extensionParameter = serviceParameters?.[HTTP_EXTENSION_HEADER];
-    return extensionParameter ? new ServerCallContext(Extensions.parseServiceParameter(extensionParameter)) : undefined;
-  }
-
-  private errorResponse(id: string | number | null, error: unknown): JSONRPCResponse {
-    const a2aError =
-      error instanceof A2AError
-        ? error
-        : A2AError.internalError(error instanceof Error ? error.message : 'A2A JetStream transport error');
-    return {
-      jsonrpc: '2.0',
-      id,
-      error: a2aError.toJSONRPCError(),
-    };
   }
 }
 
 export function serveA2AOverJetStream(options: JetStreamA2AServerOptions): JetStreamA2AServer {
   return new JetStreamA2AServer(options);
+}
+
+function responseFrame<TResponse>(
+  method: A2ANatsTransportMethod,
+  response: TResponse,
+  requestId: string | undefined
+): Extract<A2ANatsStreamFrame, { kind: 'response' }> {
+  return decodeStreamFrame(encodeUnaryResponseFrame(method, response, requestId)) as Extract<A2ANatsStreamFrame, { kind: 'response' }>;
 }
 
 async function ensureStream(
@@ -560,8 +534,4 @@ async function nextMessage(consumer: Consumer, timeout: number): Promise<JsMsg> 
 
 function durableName(value: string): string {
   return sanitizeSubjectToken(value).slice(0, 128);
-}
-
-function isAsyncIterable<T>(value: unknown): value is AsyncGenerator<T, void, undefined> {
-  return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
 }

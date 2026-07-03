@@ -1,33 +1,44 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type {
-  AgentCard,
+import {
+  A2A_PROTOCOL_VERSION,
   Message,
-  MessageSendParams,
-  Task,
-  TaskArtifactUpdateEvent,
-  TaskIdParams,
-  TaskPushNotificationConfig,
-  TaskQueryParams,
-  TaskStatusUpdateEvent,
+  Role,
+  SendMessageRequest,
+  StreamResponse,
+  TaskState,
+  type AgentCard,
+  type CancelTaskRequest,
+  type DeleteTaskPushNotificationConfigRequest,
+  type GetExtendedAgentCardRequest,
+  type GetTaskPushNotificationConfigRequest,
+  type GetTaskRequest,
+  type ListTaskPushNotificationConfigsRequest,
+  type ListTaskPushNotificationConfigsResponse,
+  type ListTasksRequest,
+  type ListTasksResponse,
+  type SendMessageResult,
+  type SubscribeToTaskRequest,
+  type Task,
+  type TaskPushNotificationConfig,
 } from '@a2a-js/sdk';
-import type { A2ARequestHandler } from '@a2a-js/sdk/server';
+import type { A2ARequestHandler, ServerCallContext } from '@a2a-js/sdk/server';
 import { connect } from '@nats-io/transport-node';
 
 import {
-  NatsA2AClientTransport,
-  NatsA2AServer,
   JetStreamA2AClientTransport,
   JetStreamA2AServer,
   JetStreamKvAgentCardRegistry,
+  NatsA2AClientTransport,
+  NatsA2AServer,
   a2aJetStreamRequestSubject,
   a2aNatsAgentSubject,
 } from '../sdks/typescript/src/index.js';
 
 const natsUrl = process.env.NATS_URL;
 
-test('routes A2A calls through a real NATS server', { skip: !natsUrl }, async () => {
+test('routes A2A v1 calls through a real NATS server', { skip: !natsUrl }, async () => {
   assert.ok(natsUrl);
 
   const subject = a2aNatsAgentSubject({
@@ -49,23 +60,21 @@ test('routes A2A calls through a real NATS server', { skip: !natsUrl }, async ()
   try {
     await server.ready();
 
-    const unary = await client.sendMessage(sendParams('real nats'));
-    assert.equal(unary.kind, 'message');
-    assert.equal(unary.parts[0]?.kind, 'text');
-    assert.equal(unary.parts[0]?.kind === 'text' ? unary.parts[0].text : '', 'echo: real nats');
+    const unary = await client.sendMessage(sendRequest('real nats'));
+    assert.equal(messageText(assertMessage(unary)), 'echo: real nats');
 
     const streamEvents = [];
-    for await (const event of client.sendMessageStream(sendParams('stream'))) {
-      streamEvents.push(event.kind);
+    for await (const event of client.sendMessageStream(sendRequest('stream'))) {
+      streamEvents.push(event.payload?.$case);
     }
-    assert.deepEqual(streamEvents, ['task', 'status-update']);
+    assert.deepEqual(streamEvents, ['task', 'statusUpdate']);
   } finally {
-    await server.close();
+    server.close();
     await connection.drain();
   }
 });
 
-test('routes A2A calls through JetStream-backed durable subjects', { skip: !natsUrl }, async () => {
+test('routes A2A v1 calls through JetStream-backed durable subjects', { skip: !natsUrl }, async () => {
   assert.ok(natsUrl);
 
   const connection = await connect({ servers: natsUrl });
@@ -99,23 +108,21 @@ test('routes A2A calls through JetStream-backed durable subjects', { skip: !nats
     await server.ready();
     await client.ready();
 
-    const unary = await client.sendMessage(sendParams('durable nats'));
-    assert.equal(unary.kind, 'message');
-    assert.equal(unary.parts[0]?.kind, 'text');
-    assert.equal(unary.parts[0]?.kind === 'text' ? unary.parts[0].text : '', 'echo: durable nats');
+    const unary = await client.sendMessage(sendRequest('durable nats'));
+    assert.equal(messageText(assertMessage(unary)), 'echo: durable nats');
 
     const streamEvents = [];
-    for await (const event of client.sendMessageStream(sendParams('stream'))) {
-      streamEvents.push(event.kind);
+    for await (const event of client.sendMessageStream(sendRequest('stream'))) {
+      streamEvents.push(event.payload?.$case);
     }
-    assert.deepEqual(streamEvents, ['task', 'status-update']);
+    assert.deepEqual(streamEvents, ['task', 'statusUpdate']);
   } finally {
-    server.close();
+    await server.close();
     await connection.drain();
   }
 });
 
-test('publishes AgentCards to a dedicated JetStream KV bucket', { skip: !natsUrl }, async () => {
+test('round-trips v1 AgentCards through a dedicated JetStream KV bucket', { skip: !natsUrl }, async () => {
   assert.ok(natsUrl);
 
   const connection = await connect({ servers: natsUrl });
@@ -126,13 +133,13 @@ test('publishes AgentCards to a dedicated JetStream KV bucket', { skip: !natsUrl
   });
 
   try {
-    const card = new IntegrationRequestHandler().card();
+    const card = agentCard('Integration Agent', 'nats://integration.a2a.agent.integration.rpc');
     const published = await registry.publish({ agentId: 'agent-a', card });
     const resolved = await registry.resolve('agent-a');
     const listed = await registry.list();
 
     assert.equal(published.key, 'server-a.agents.agent-a');
-    assert.equal(resolved?.card.name, card.name);
+    assert.deepEqual(resolved?.card, card);
     assert.deepEqual(listed.map(entry => entry.key), ['server-a.agents.agent-a']);
   } finally {
     await connection.drain();
@@ -140,123 +147,161 @@ test('publishes AgentCards to a dedicated JetStream KV bucket', { skip: !natsUrl
 });
 
 class IntegrationRequestHandler implements A2ARequestHandler {
-  private readonly agentCard: AgentCard = {
-    name: 'Integration Agent',
-    description: 'A test agent backed by a real NATS server',
-    version: '0.1.0',
-    protocolVersion: '0.3.0',
-    url: 'nats://integration.a2a.agent.integration.rpc',
-    preferredTransport: 'NATS',
-    capabilities: {
-      streaming: true,
-      pushNotifications: true,
-    },
-    defaultInputModes: ['text/plain'],
-    defaultOutputModes: ['text/plain'],
-    skills: [],
-  };
-
-  card(): AgentCard {
-    return this.agentCard;
-  }
+  private readonly agentCard = agentCard('Integration Agent', 'nats://integration.a2a.agent.integration.rpc');
 
   async getAgentCard(): Promise<AgentCard> {
     return this.agentCard;
   }
 
-  async getAuthenticatedExtendedAgentCard(): Promise<AgentCard> {
+  async getAuthenticatedExtendedAgentCard(_params: GetExtendedAgentCardRequest, _context: ServerCallContext): Promise<AgentCard> {
     return this.agentCard;
   }
 
-  async sendMessage(params: MessageSendParams): Promise<Message> {
+  async sendMessage(params: SendMessageRequest): Promise<Message> {
     return agentMessage(`echo: ${textFrom(params)}`);
   }
 
-  async *sendMessageStream(): AsyncGenerator<Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent, void, undefined> {
+  async *sendMessageStream(): AsyncGenerator<StreamResponse, void, undefined> {
+    yield { payload: { $case: 'task', value: task('task-real', TaskState.TASK_STATE_WORKING) } };
     yield {
-      kind: 'task',
-      id: 'task-real',
-      contextId: 'context-real',
-      status: { state: 'working' },
-    };
-    yield {
-      kind: 'status-update',
-      taskId: 'task-real',
-      contextId: 'context-real',
-      status: { state: 'completed' },
-      final: true,
-    } as never;
-  }
-
-  async getTask(params: TaskQueryParams): Promise<Task> {
-    return {
-      kind: 'task',
-      id: params.id,
-      contextId: 'context-real',
-      status: { state: 'completed' },
-    };
-  }
-
-  async cancelTask(params: TaskIdParams): Promise<Task> {
-    return {
-      kind: 'task',
-      id: params.id,
-      contextId: 'context-real',
-      status: { state: 'canceled' },
-    };
-  }
-
-  async setTaskPushNotificationConfig(params: TaskPushNotificationConfig): Promise<TaskPushNotificationConfig> {
-    return params;
-  }
-
-  async getTaskPushNotificationConfig(params: TaskIdParams): Promise<TaskPushNotificationConfig> {
-    return {
-      taskId: params.id,
-      pushNotificationConfig: {
-        id: 'config-real',
-        url: 'https://example.test/a2a',
+      payload: {
+        $case: 'statusUpdate',
+        value: {
+          taskId: 'task-real',
+          contextId: 'context-real',
+          status: { state: TaskState.TASK_STATE_COMPLETED, message: undefined, timestamp: undefined },
+          metadata: undefined,
+        },
       },
     };
   }
 
-  async listTaskPushNotificationConfigs(params: TaskIdParams): Promise<TaskPushNotificationConfig[]> {
-    return [await this.getTaskPushNotificationConfig(params)];
+  async getTask(params: GetTaskRequest): Promise<Task> {
+    return task(params.id, TaskState.TASK_STATE_COMPLETED);
   }
 
-  async deleteTaskPushNotificationConfig(): Promise<void> {}
+  async cancelTask(params: CancelTaskRequest): Promise<Task> {
+    return task(params.id, TaskState.TASK_STATE_CANCELED);
+  }
 
-  async *resubscribe(): AsyncGenerator<Task, void, undefined> {
-    yield {
-      kind: 'task',
-      id: 'task-real',
-      contextId: 'context-real',
-      status: { state: 'completed' },
-    };
+  async listTasks(_params: ListTasksRequest): Promise<ListTasksResponse> {
+    return { tasks: [task('task-real', TaskState.TASK_STATE_COMPLETED)], nextPageToken: '', pageSize: 1, totalSize: 1 };
+  }
+
+  async createTaskPushNotificationConfig(params: TaskPushNotificationConfig): Promise<TaskPushNotificationConfig> {
+    return params;
+  }
+
+  async getTaskPushNotificationConfig(params: GetTaskPushNotificationConfigRequest): Promise<TaskPushNotificationConfig> {
+    return pushConfig(params.taskId, params.id);
+  }
+
+  async listTaskPushNotificationConfigs(
+    params: ListTaskPushNotificationConfigsRequest
+  ): Promise<ListTaskPushNotificationConfigsResponse> {
+    return { configs: [pushConfig(params.taskId, 'config-real')], nextPageToken: '' };
+  }
+
+  async deleteTaskPushNotificationConfig(_params: DeleteTaskPushNotificationConfigRequest): Promise<void> {}
+
+  async *resubscribe(params: SubscribeToTaskRequest): AsyncGenerator<StreamResponse, void, undefined> {
+    yield { payload: { $case: 'task', value: task(params.id, TaskState.TASK_STATE_COMPLETED) } };
   }
 }
 
-function sendParams(text: string): MessageSendParams {
+function agentCard(name: string, url: string): AgentCard {
   return {
-    message: {
-      kind: 'message',
-      role: 'user',
-      messageId: `message-${text}`,
-      parts: [{ kind: 'text', text }],
+    name,
+    description: 'A test agent backed by a real NATS server',
+    version: '0.2.0',
+    supportedInterfaces: [
+      {
+        url,
+        protocolBinding: 'NATS',
+        protocolVersion: A2A_PROTOCOL_VERSION,
+        tenant: '',
+      },
+    ],
+    provider: undefined,
+    capabilities: {
+      streaming: true,
+      pushNotifications: true,
+      extensions: [],
+      extendedAgentCard: true,
     },
+    securitySchemes: {},
+    securityRequirements: [],
+    defaultInputModes: ['text/plain'],
+    defaultOutputModes: ['text/plain'],
+    skills: [],
+    signatures: [],
+  };
+}
+
+function sendRequest(text: string): SendMessageRequest {
+  return {
+    tenant: '',
+    message: {
+      messageId: `message-${text}`,
+      contextId: '',
+      taskId: '',
+      role: Role.ROLE_USER,
+      parts: [{ content: { $case: 'text', value: text }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
+      metadata: undefined,
+      extensions: [],
+      referenceTaskIds: [],
+    },
+    configuration: undefined,
+    metadata: undefined,
   };
 }
 
 function agentMessage(text: string): Message {
   return {
-    kind: 'message',
-    role: 'agent',
     messageId: `agent-${text}`,
-    parts: [{ kind: 'text', text }],
+    contextId: 'context-real',
+    taskId: '',
+    role: Role.ROLE_AGENT,
+    parts: [{ content: { $case: 'text', value: text }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
+    metadata: undefined,
+    extensions: [],
+    referenceTaskIds: [],
   };
 }
 
-function textFrom(params: MessageSendParams): string {
-  const part = params.message.parts[0];
-  return part?.kind === 'text' ? part.text : '';
+function task(id: string, state: TaskState): Task {
+  return {
+    id,
+    contextId: 'context-real',
+    status: { state, message: undefined, timestamp: undefined },
+    artifacts: [],
+    history: [],
+    metadata: undefined,
+  };
+}
+
+function pushConfig(taskId: string, id: string): TaskPushNotificationConfig {
+  return {
+    tenant: '',
+    taskId,
+    id,
+    url: 'https://example.test/a2a',
+    token: '',
+    authentication: undefined,
+  };
+}
+
+function assertMessage(result: SendMessageResult): Message {
+  assert.ok('parts' in result);
+  return result;
+}
+
+function messageText(message: Message): string {
+  const part = message.parts[0];
+  return part?.content?.$case === 'text' ? part.content.value : '';
+}
+
+function textFrom(params: SendMessageRequest): string {
+  const part = params.message?.parts[0];
+  return part?.content?.$case === 'text' ? part.content.value : '';
 }

@@ -8,11 +8,12 @@ export class FakeNatsBroker implements NatsConnectionLike {
     return `_INBOX.${this.inboxCounter++}`;
   }
 
-  publish(subject: string, data?: Uint8Array, options?: { reply?: string }): void {
+  publish(subject: string, data?: Uint8Array, options?: Parameters<NatsConnectionLike['publish']>[2]): void {
     for (const subscription of this.subscriptions.get(subject) ?? []) {
       subscription.deliver({
         data: data ?? new Uint8Array(),
         reply: options?.reply,
+        headers: options?.headers,
         respond: response => {
           if (!options?.reply) {
             return false;
@@ -27,7 +28,7 @@ export class FakeNatsBroker implements NatsConnectionLike {
   request(subject: string, data?: Uint8Array, options?: NatsRequestOptions): Promise<NatsMsgLike> {
     const reply = this.createInbox();
     const subscription = this.subscribe(reply);
-    this.publish(subject, data, { reply });
+    this.publish(subject, data, { reply, headers: options?.headers });
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         subscription.unsubscribe();
@@ -119,4 +120,3 @@ class FakeSubscription implements AsyncIterable<NatsMsgLike> {
     this.queue.push(null);
   }
 }
-
