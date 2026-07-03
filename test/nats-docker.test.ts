@@ -3,12 +3,12 @@ import { test } from 'node:test';
 
 import {
   A2A_PROTOCOL_VERSION,
+  AgentCard,
   Message,
   Role,
   SendMessageRequest,
   StreamResponse,
   TaskState,
-  type AgentCard,
   type CancelTaskRequest,
   type DeleteTaskPushNotificationConfigRequest,
   type GetExtendedAgentCardRequest,
@@ -139,7 +139,8 @@ test('round-trips v1 AgentCards through a dedicated JetStream KV bucket', { skip
     const listed = await registry.list();
 
     assert.equal(published.key, 'server-a.agents.agent-a');
-    assert.deepEqual(resolved?.card, card);
+    assert.ok(resolved);
+    assert.deepEqual(AgentCard.toJSON(resolved.card), AgentCard.toJSON(card));
     assert.deepEqual(listed.map(entry => entry.key), ['server-a.agents.agent-a']);
   } finally {
     await connection.drain();
